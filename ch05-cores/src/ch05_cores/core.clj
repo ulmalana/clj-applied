@@ -1,5 +1,11 @@
 (ns ch05-cores.core
   (:import [java.util.concurrent LinkedBlockingQueue Executors])
+  (:require [clojure.core.reducers :as r]
+            [clojure.core.async :refer [chan dropping-buffer
+                                        sliding-buffer pipeline
+                                        >!! <!! go
+                                        >! <! ;; for go blocks
+                                        ]])
   (:gen-class))
 
 ;;; chapter 5 use your cores
@@ -102,3 +108,98 @@
 
 (defn submit-task [^Runnable task]
   (.submit executor task))
+
+;;; parallelism with reducers
+(def shipping-data {:id "1234"
+                    :class :ground
+                    :weight 10
+                    :volume 300})
+
+(defn ground? [product]
+  (= :ground (:class product)))
+
+(defn ground-weight [products]
+  (->> products
+       (filter ground?)
+       (map :weight)
+       (reduce +)))
+
+;; using reducers
+;; reducers will be significantly faster since it uses multithreads,
+;; depending on the data partitions (default 512).
+(defn ground-weight-reducer [products]
+  (->> products
+       (r/filter ground?)
+       (r/map :weight)
+       (r/fold +)))
+
+;;; thinking in process
+;; (using core.async)
+
+;; channels
+;; creating channels
+(comment
+  (chan) ;; unbuffered channel (length 0)
+  (chan 10) ;; buffered length 10
+  (chan (dropping-buffer 10)) ;; drop new values when full
+  (chan (sliding-buffer 10)) ;; drop old values when full
+  )
+
+(def c (chan 1))
+(>!! c "halo") ;; put halo to channel
+;; => true
+(println (<!! c)) ;; take value from channel
+;; halo
+;; => nil
+
+;; go blocks
+(defn go-print
+  "pull messages from channel c and print them"
+  [c]
+  (go
+    (loop []
+      (when-some [val (<! c)]
+        (println "Received a message:" val)
+        (recur)))))
+
+;; processing a stream of social media messages
+;; using series of transformations
+(def parse-words
+  (map #(set (clojure.string/split % #"\s"))))
+
+;; filter messages that contain a word of interest
+(def interesting
+  (filter #(contains? % "Clojure")))
+
+;; detect sentiment based on different word list
+(defn match [search-words message-words]
+  (count (clojure.set/intersection search-words message-words)))
+
+(def happy
+  (partial match #{"happy" "awesome" "rocks" "amazing"}))
+
+(def sad
+  (partial match #{"sad" "bug" "crash"}))
+
+(def score
+  (map #(hash-map :words %1
+                  :happy (happy %1)
+                  :sad (sad %1))))
+
+;; define pipeline stage
+(defn sentiment-stage [in out]
+  (let [xf (comp parse-words interesting score)]
+    (pipeline 4 out xf in)))
+
+;; or split the stage
+(defn interesting-stage-split [in intermediate]
+  (let [xf (comp parse-words interesting)]
+    (pipeline 4 intermediate xf in)))
+
+(defn score-stage-split [intermediate out]
+  (pipeline 1 out score intermediate))
+
+(defn assemble-stages [in out]
+  (let [intermediate (chan 100)]
+    (interesting-stage-split in intermediate)
+    (score-stage-split intermediate out)))
