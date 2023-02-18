@@ -1,0 +1,8 @@
+[
+ {:name "Joe Smith"
+  :email "joe@company.com"
+  :roles [:admin :supervisor :analyst]}
+ {:name "Robert Jones"
+  :email "rob@company.com"
+  :roles [:analyst]}
+ ]
